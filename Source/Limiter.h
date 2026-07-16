@@ -93,9 +93,12 @@ public:
             }
             else
             {
-                // release: program-dependent blend of fast/slow based on current GR depth
-                float grDepth = juce::jlimit (0.0f, 1.0f, (1.0f - currentGain) * 4.0f); // 0=no GR,1=deep GR
-                float releaseCoeff = juce::jmap (grDepth, slowReleaseCoeff, fastReleaseCoeff);
+               // release: program-dependent blend of fast/slow based on current GR depth.
+                // Shallow/brief GR -> fast release (stays transparent, recovers quickly).
+                // Deep/sustained GR -> slow release (avoids pumping/grain, stays smooth).
+                float grDbNow = -juce::Decibels::gainToDecibels (currentGain, -60.0f);
+                float grDepth = juce::jlimit (0.0f, 1.0f, grDbNow / 12.0f); // 0dB->0, 12dB+->1
+                float releaseCoeff = juce::jmap (grDepth, fastReleaseCoeff, slowReleaseCoeff);
                 currentGain = targetGain + (currentGain - targetGain) * releaseCoeff;
             }
 
