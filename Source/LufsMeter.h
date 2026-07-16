@@ -10,6 +10,10 @@
 // at -10 LU below ungated loudness), and a rolling 3s window for
 // Short-term loudness.
 
+#ifndef LUFS_PI
+#define LUFS_PI 3.14159265358979323846
+#endif
+
 class KWeightingFilter
 {
 public:
