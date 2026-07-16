@@ -39,6 +39,12 @@ public:
         fastReleaseCoeff = (float) std::exp (-1.0 / (osSampleRate * 0.050));  // 50ms
         slowReleaseCoeff = (float) std::exp (-1.0 / (osSampleRate * 0.400));  // 400ms
 
+        // Tracks how SUSTAINED the gain reduction is (separate from how deep
+        // it is at this instant), so a single sharp transient doesn't get
+        // mistaken for a long loud passage and needlessly slow the release.
+        depthEnvelope = 0.0f;
+        depthSmoothCoeff = (float) std::exp (-1.0 / (osSampleRate * 0.150)); // 150ms
+
         sampleIndex = 0;
     }
 
@@ -48,6 +54,7 @@ public:
         peakWindow.clear();
         currentGain = 1.0f;
         gainReductionDb = 0.0f;
+        depthEnvelope = 0.0f;
         writePos = 0;
         sampleIndex = 0;
         if (oversampler) oversampler->reset();
@@ -93,14 +100,18 @@ public:
             }
             else
             {
-               // release: program-dependent blend of fast/slow based on current GR depth.
-                // Shallow/brief GR -> fast release (stays transparent, recovers quickly).
-                // Deep/sustained GR -> slow release (avoids pumping/grain, stays smooth).
-                float grDbNow = -juce::Decibels::gainToDecibels (currentGain, -60.0f);
-                float grDepth = juce::jlimit (0.0f, 1.0f, grDbNow / 12.0f); // 0dB->0, 12dB+->1
-                float releaseCoeff = juce::jmap (grDepth, fastReleaseCoeff, slowReleaseCoeff);
+                // release: program-dependent blend of fast/slow based on the
+                // SUSTAIN envelope (how long GR has been deep), not how deep
+                // it is this instant. This keeps brief transients snappy
+                // while genuinely sustained loud passages stay smooth.
+                float releaseCoeff = juce::jmap (depthEnvelope, fastReleaseCoeff, slowReleaseCoeff);
                 currentGain = targetGain + (currentGain - targetGain) * releaseCoeff;
             }
+
+            // Update the sustain envelope from the gain we just computed.
+            float instDepthDb = -juce::Decibels::gainToDecibels (currentGain, -60.0f);
+            float instDepth = juce::jlimit (0.0f, 1.0f, instDepthDb / 12.0f); // 0dB->0, 12dB+->1
+            depthEnvelope = depthEnvelope * depthSmoothCoeff + instDepth * (1.0f - depthSmoothCoeff);
 
             int readPos = (writePos - lookaheadSamples + (int) delayLine.size()) % (int) delayLine.size();
             float delayed = delayLine[(size_t) readPos];
@@ -146,4 +157,6 @@ private:
     float gainReductionDb = 0.0f;
     float fastReleaseCoeff = 0.0f;
     float slowReleaseCoeff = 0.0f;
+    float depthEnvelope = 0.0f;
+    float depthSmoothCoeff = 0.0f;
 };
