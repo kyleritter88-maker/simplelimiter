@@ -8,12 +8,24 @@ namespace
     const juce::Colour textColour     { 0xffe8e8ea };
     const juce::Colour dimTextColour  { 0xff8a8d94 };
     const juce::Colour meterColour    { 0xffff5c5c };
+
+    // Shared layout constants so paint() and resized() can never disagree.
+    constexpr int margin        = 24;
+    constexpr int titleHeight   = 40;
+    constexpr int knobAreaH     = 180;
+    constexpr int knobSize      = 150;
+    constexpr int gainLabelH    = 22;
+    constexpr int meterAreaH    = 140;
+    constexpr int meterLabelGap = 20;   // space below meters for L/R text
+    constexpr int lufsRowH      = 60;
+    constexpr int ceilingH      = 24;
+    constexpr int sectionGap    = 10;
 }
 
 SimpleLimiterAudioProcessorEditor::SimpleLimiterAudioProcessorEditor (SimpleLimiterAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p)
 {
-    setSize (360, 460);
+    setSize (360, 580);
 
     gainKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     gainKnob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 100, 24);
@@ -87,12 +99,7 @@ void SimpleLimiterAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (textColour);
     g.setFont (juce::Font (20.0f, juce::Font::bold));
-    g.drawText ("SIMPLE LIMITER", getLocalBounds().removeFromTop (40), juce::Justification::centred);
-
-    // Gain reduction meters (L/R), drawn as two vertical bars under the knob area
-    auto bounds = getLocalBounds().reduced (24);
-    auto meterArea = bounds.removeFromBottom (140).reduced (0, 8);
-    meterArea.removeFromBottom (60); // leave room for LUFS labels below, laid out in resized()
+    g.drawText ("SIMPLE LIMITER", getLocalBounds().removeFromTop (titleHeight), juce::Justification::centred);
 
     auto drawMeter = [&] (juce::Rectangle<int> r, float grDb, const juce::String& label)
     {
@@ -107,40 +114,43 @@ void SimpleLimiterAudioProcessorEditor::paint (juce::Graphics& g)
 
         g.setColour (dimTextColour);
         g.setFont (juce::Font (11.0f));
-        g.drawText (label, r.withY (r.getBottom() + 2).withHeight (16), juce::Justification::centred);
+        g.drawText (label, r.getX(), r.getBottom() + 2, r.getWidth(), 16, juce::Justification::centred);
     };
 
     int meterWidth = 28;
     int gap = 40;
     int totalWidth = meterWidth * 2 + gap;
-    int startX = bounds.getCentreX() - totalWidth / 2;
+    int startX = meterAreaBounds.getCentreX() - totalWidth / 2;
 
-    juce::Rectangle<int> lMeter (startX, meterArea.getY(), meterWidth, meterArea.getHeight());
-    juce::Rectangle<int> rMeter (startX + meterWidth + gap, meterArea.getY(), meterWidth, meterArea.getHeight());
+    juce::Rectangle<int> lMeter (startX, meterAreaBounds.getY(), meterWidth, meterAreaBounds.getHeight());
+    juce::Rectangle<int> rMeter (startX + meterWidth + gap, meterAreaBounds.getY(), meterWidth, meterAreaBounds.getHeight());
 
     drawMeter (lMeter, grL, "L");
     drawMeter (rMeter, grR, "R");
 
     g.setColour (dimTextColour);
     g.setFont (juce::Font (11.0f));
-    g.drawText ("GAIN REDUCTION (dB)", lMeter.getX() - 10, meterArea.getY() - 18,
+    g.drawText ("GAIN REDUCTION (dB)", lMeter.getX() - 10, meterAreaBounds.getY() - 18,
                 totalWidth + 20, 16, juce::Justification::centred);
 }
 
 void SimpleLimiterAudioProcessorEditor::resized()
 {
-    auto bounds = getLocalBounds().reduced (24);
+    auto bounds = getLocalBounds().reduced (margin);
 
-    bounds.removeFromTop (30); // title space
+    bounds.removeFromTop (titleHeight);
 
-    auto knobArea = bounds.removeFromTop (190);
-    gainKnob.setBounds (knobArea.withSizeKeepingCentre (160, 160));
+    auto knobArea = bounds.removeFromTop (knobAreaH);
+    gainKnob.setBounds (knobArea.withSizeKeepingCentre (knobSize, knobSize));
 
-    gainLabel.setBounds (bounds.removeFromTop (20));
+    gainLabel.setBounds (bounds.removeFromTop (gainLabelH));
+    bounds.removeFromTop (sectionGap);
 
-    bounds.removeFromTop (170); // reserved for GR meters, drawn in paint()
+    meterAreaBounds = bounds.removeFromTop (meterAreaH);
+    bounds.removeFromTop (meterLabelGap);
+    bounds.removeFromTop (sectionGap);
 
-    auto lufsRow = bounds.removeFromTop (70);
+    auto lufsRow = bounds.removeFromTop (lufsRowH);
     auto leftHalf  = lufsRow.removeFromLeft (lufsRow.getWidth() / 2);
     auto rightHalf = lufsRow;
 
@@ -150,5 +160,6 @@ void SimpleLimiterAudioProcessorEditor::resized()
     lufsShortTermValue.setBounds (rightHalf.removeFromTop (34));
     lufsShortTermCaption.setBounds (rightHalf);
 
-    ceilingCaption.setBounds (bounds.removeFromTop (20));
+    bounds.removeFromTop (sectionGap);
+    ceilingCaption.setBounds (bounds.removeFromTop (ceilingH));
 }
