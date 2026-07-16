@@ -53,19 +53,6 @@ void SimpleLimiterAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
     // Apply input drive
     buffer.applyGain (gainLinear);
 
-    // Feed LUFS meter with the driven (pre-limiter) signal — this reflects
-    // the loudness of what you're actually asking the limiter to control.
-    if (buffer.getNumChannels() >= 2)
-    {
-        auto* left  = buffer.getReadPointer (0);
-        auto* right = buffer.getReadPointer (1);
-        for (int i = 0; i < numSamples; ++i)
-        {
-            float pair[2] = { left[i], right[i] };
-            lufsMeter.pushSample (pair);
-        }
-    }
-
     if (buffer.getNumChannels() > 0)
     {
         float grL = limiterL.processBlock (buffer.getWritePointer (0), numSamples, ceilingLinear);
@@ -75,6 +62,20 @@ void SimpleLimiterAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
     {
         float grR = limiterR.processBlock (buffer.getWritePointer (1), numSamples, ceilingLinear);
         gainReductionDbR.store (grR);
+    }
+
+    // Feed LUFS meter with the actual output (post-limiter) signal — this is
+    // what's really being sent downstream, and what you'd compare against
+    // another limiter's output loudness.
+    if (buffer.getNumChannels() >= 2)
+    {
+        auto* left  = buffer.getReadPointer (0);
+        auto* right = buffer.getReadPointer (1);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float pair[2] = { left[i], right[i] };
+            lufsMeter.pushSample (pair);
+        }
     }
 
     lufsIntegrated.store ((float) lufsMeter.getIntegratedLufs());
