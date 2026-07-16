@@ -16,12 +16,15 @@
 class ChannelLimiter
 {
 public:
-    void prepare (double sampleRateIn, int maxBlockSize, int lookaheadMs = 5)
+    // factorLog2: 1 = 2x oversampling, 2 = 4x, 3 = 8x.
+    void prepare (double sampleRateIn, int maxBlockSize, int factorLog2 = 2, int lookaheadMs = 5)
     {
         sampleRate = sampleRateIn;
+        preparedBlockSize = maxBlockSize;
+        preparedFactorLog2 = factorLog2;
 
         oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
-            1, 2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true, false);
+            1, factorLog2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true, false);
         oversampler->initProcessing ((size_t) maxBlockSize);
 
         osSampleRate = sampleRate * (double) oversampler->getOversamplingFactor();
@@ -36,8 +39,9 @@ public:
         currentGain = 1.0f;
         gainReductionDb = 0.0f;
 
-        fastReleaseCoeff = (float) std::exp (-1.0 / (osSampleRate * 0.050));  // 50ms
-        slowReleaseCoeff = (float) std::exp (-1.0 / (osSampleRate * 0.400));  // 400ms
+        fastReleaseCoeff = (float) std::exp (-1.0 / (osSampleRate * 0.050));  // default 50ms
+        slowReleaseCoeff = (float) std::exp (-1.0 / (osSampleRate * 0.400));  // default 400ms
+        attackCoeff = (float) std::exp (-1.0 / (osSampleRate * 0.0005));      // default 0.5ms
 
         // Tracks how SUSTAINED the gain reduction is (separate from how deep
         // it is at this instant), so a single sharp transient doesn't get
@@ -48,6 +52,20 @@ public:
         sampleIndex = 0;
     }
 
+    // Cheap check called once per block. If the oversampling factor has
+    // changed since the last prepare(), fully reinitializes (this causes a
+    // brief discontinuity — unavoidable when the DSP engine itself changes
+    // shape — and reports the new latency via the returned bool so the
+    // caller can update the host and any delay-matched bypass path).
+    bool reinitIfNeeded (double sampleRateIn, int maxBlockSize, int factorLog2)
+    {
+        if (factorLog2 == preparedFactorLog2 && sampleRateIn == sampleRate && maxBlockSize == preparedBlockSize)
+            return false;
+
+        prepare (sampleRateIn, maxBlockSize, factorLog2);
+        return true;
+    }
+
     void reset()
     {
         std::fill (delayLine.begin(), delayLine.end(), 0.0f);
@@ -55,10 +73,25 @@ public:
         currentGain = 1.0f;
         gainReductionDb = 0.0f;
         depthEnvelope = 0.0f;
+        peakLevelDb = -100.0f;
         writePos = 0;
         sampleIndex = 0;
         if (oversampler) oversampler->reset();
     }
+
+    // Call once per block before processBlock() to update attack/release times
+    // from user-controlled parameters. Cheap (a couple of exp() calls).
+    void setTimes (float attackMs, float releaseMs)
+    {
+        attackCoeff = (float) std::exp (-1.0 / (osSampleRate * juce::jmax (0.02, (double) attackMs) / 1000.0));
+
+        float slowMs = juce::jmax (5.0f, releaseMs);
+        float fastMs = juce::jlimit (5.0f, slowMs, slowMs / 8.0f);
+        slowReleaseCoeff = (float) std::exp (-1.0 / (osSampleRate * slowMs / 1000.0));
+        fastReleaseCoeff = (float) std::exp (-1.0 / (osSampleRate * fastMs / 1000.0));
+    }
+
+    void setDitherEnabled (bool enabled) { ditherEnabled = enabled; }
 
     // Processes one block in place. ceilingLinear is the true-peak ceiling (e.g. 0.891 for -1dBFS).
     // Returns the max instantaneous gain reduction (dB) seen during this block, for metering.
@@ -95,8 +128,10 @@ public:
 
             if (targetGain < currentGain)
             {
-                // attack: jump straight there (lookahead already gave us time)
-                currentGain = targetGain;
+                // attack: smoothed toward target at the user-set attack time.
+                // The hard safety clamp below still guarantees the true-peak
+                // ceiling even if gain hasn't fully caught up yet.
+                currentGain = targetGain + (currentGain - targetGain) * attackCoeff;
             }
             else
             {
@@ -131,6 +166,25 @@ public:
 
         oversampler->processSamplesDown (block);
         gainReductionDb = maxGrDb;
+
+        float blockPeak = 0.0f;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            if (ditherEnabled)
+            {
+                // TPDF (triangular) dither sized to a 16-bit LSB — applied
+                // here, to the final downsampled signal, since dither only
+                // makes sense as the last step before requantization. Adding
+                // it to the oversampled intermediate signal would have its
+                // statistics altered by the decimation filter.
+                float r1 = ditherRandom.nextFloat();
+                float r2 = ditherRandom.nextFloat();
+                samples[i] += (r1 - r2) * ditherAmplitude;
+            }
+            blockPeak = std::max (blockPeak, std::abs (samples[i]));
+        }
+        peakLevelDb = juce::Decibels::gainToDecibels (blockPeak, -100.0f);
+
         return maxGrDb;
     }
 
@@ -140,11 +194,14 @@ public:
     }
 
     float getGainReductionDb() const { return gainReductionDb; }
+    float getPeakLevelDb() const { return peakLevelDb; }
 
 private:
     double sampleRate = 48000.0;
     double osSampleRate = 96000.0;
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
+    int preparedFactorLog2 = 2;
+    int preparedBlockSize = 0;
 
     int lookaheadSamples = 1;
     std::vector<float> delayLine;
@@ -155,8 +212,14 @@ private:
 
     float currentGain = 1.0f;
     float gainReductionDb = 0.0f;
+    float attackCoeff = 0.0f;
     float fastReleaseCoeff = 0.0f;
     float slowReleaseCoeff = 0.0f;
     float depthEnvelope = 0.0f;
     float depthSmoothCoeff = 0.0f;
+    float peakLevelDb = -100.0f;
+
+    bool ditherEnabled = false;
+    juce::Random ditherRandom;
+    static constexpr float ditherAmplitude = 1.0f / 32768.0f; // 16-bit LSB
 };
