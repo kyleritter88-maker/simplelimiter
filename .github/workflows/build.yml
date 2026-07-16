@@ -1,1 +1,50 @@
+name: Build VST3
 
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Locate VST3
+        shell: bash
+        run: |
+          mkdir -p artifact
+          find build -iname "*.vst3" -type d -exec cp -r {} artifact/ \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SimpleLimiter-Windows-VST3
+          path: artifact
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -G Xcode
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Locate VST3
+        run: |
+          mkdir -p artifact
+          find build -iname "*.vst3" -type d -exec cp -r {} artifact/ \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SimpleLimiter-macOS-VST3
+          path: artifact
