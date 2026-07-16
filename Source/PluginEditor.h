@@ -26,6 +26,7 @@ private:
     juce::Label ceilingCaption;
 
     float grL = 0.0f, grR = 0.0f;
+    juce::Rectangle<int> meterAreaBounds;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gainAttachment;
 
