@@ -4,15 +4,15 @@
 #include <cmath>
 #include <algorithm>
 
+#ifndef LUFS_PI
+#define LUFS_PI 3.14159265358979323846
+#endif
+
 // ITU-R BS.1770-4 compliant loudness meter.
 // Implements K-weighting (high-shelf + high-pass), 400ms gating blocks
 // for Integrated loudness (with -70 LUFS absolute gate and relative gate
 // at -10 LU below ungated loudness), and a rolling 3s window for
 // Short-term loudness.
-
-#ifndef LUFS_PI
-#define LUFS_PI 3.14159265358979323846
-#endif
 
 class KWeightingFilter
 {
@@ -143,6 +143,19 @@ public:
 
     double getIntegratedLufs() const { return integratedLufs; }
     double getShortTermLufs()  const { return shortTermLufs; }
+
+    // Clears accumulated history so the next reading starts fresh.
+    void resetIntegrated()
+    {
+        gatingBlockLoudness.clear();
+        integratedLufs = -70.0;
+    }
+
+    void resetShortTerm()
+    {
+        shortTermHistory.clear();
+        shortTermLufs = -70.0;
+    }
 
 private:
     double sampleRate = 48000.0;
