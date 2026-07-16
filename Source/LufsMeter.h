@@ -66,7 +66,7 @@ private:
     static void computeHighShelf (double sr, double f0, double gainDb, double Q, Coeffs& c)
     {
         double A  = std::pow (10.0, gainDb / 40.0);
-        double w0 = 2.0 * M_PI * f0 / sr;
+        double w0 = 2.0 * LUFS_PI * f0 / sr;
         double alpha = std::sin (w0) / (2.0 * Q);
         double cosW0 = std::cos (w0);
         double sqrtA = std::sqrt (A);
@@ -84,7 +84,7 @@ private:
 
     static void computeHighPass (double sr, double f0, double Q, Coeffs& c)
     {
-        double w0 = 2.0 * M_PI * f0 / sr;
+        double w0 = 2.0 * LUFS_PI * f0 / sr;
         double alpha = std::sin (w0) / (2.0 * Q);
         double cosW0 = std::cos (w0);
 
