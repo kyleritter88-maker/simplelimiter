@@ -24,7 +24,7 @@ juce_add_plugin(SimpleLimiter
     COPY_PLUGIN_AFTER_BUILD FALSE
     PLUGIN_MANUFACTURER_CODE Djns
     PLUGIN_CODE Slm1
-    FORMATS VST3 Standalone
+    FORMATS VST3
     PRODUCT_NAME "Simple Limiter")
 
 juce_generate_juce_header(SimpleLimiter)
