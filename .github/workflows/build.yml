@@ -37,7 +37,9 @@ jobs:
         run: cmake -B build -G Xcode
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: >
+          cmake --build build --config Release --parallel --
+          CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 
       - name: Locate VST3
         run: |
