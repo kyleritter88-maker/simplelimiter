@@ -13,13 +13,14 @@ namespace
     // Shared layout constants so paint() and resized() can never disagree.
     constexpr int margin         = 24;
     constexpr int titleHeight    = 40;
-    constexpr int knobAreaH      = 140;
-    constexpr int knobSize       = 120;
+    constexpr int knobAreaH      = 175;
+    constexpr int knobSize       = 155;
     constexpr int gainLabelH     = 18;
-    constexpr int smallKnobAreaH = 92;
-    constexpr int smallKnobSize  = 58;
+    constexpr int smallKnobAreaH = 88;
+    constexpr int smallKnobSize  = 52;
     constexpr int smallLabelH    = 16;
     constexpr int optionsRowH    = 30;
+    constexpr int historyAreaH   = 110;
     constexpr int meterAreaH     = 120;
     constexpr int meterLabelGap  = 34; // room for "L"/"R" + peak dB text below meters
     constexpr int lufsRowH       = 56;
@@ -29,7 +30,10 @@ namespace
 SimpleLimiterAudioProcessorEditor::SimpleLimiterAudioProcessorEditor (SimpleLimiterAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p)
 {
-    setSize (400, 700);
+    setSize (400, 800);
+
+    peakHistoryLocal.fill (-100.0f);
+    grHistoryLocal.fill (0.0f);
 
     auto setupBigKnob = [this] (juce::Slider& s)
     {
@@ -126,10 +130,51 @@ SimpleLimiterAudioProcessorEditor::SimpleLimiterAudioProcessorEditor (SimpleLimi
 
 void SimpleLimiterAudioProcessorEditor::timerCallback()
 {
-    grL = processor.gainReductionDbL.load();
-    grR = processor.gainReductionDbR.load();
-    peakL = processor.peakLevelDbL.load();
-    peakR = processor.peakLevelDbR.load();
+    float newGrL = processor.gainReductionDbL.load();
+    float newGrR = processor.gainReductionDbR.load();
+    float newPeakL = processor.peakLevelDbL.load();
+    float newPeakR = processor.peakLevelDbR.load();
+
+    if (! metersFrozen)
+    {
+        // Peak-hold ballistics: jump up instantly on a new peak, hold flat
+        // for a short time, then decay smoothly back down toward the live
+        // value. Standard meter behavior, and noticeably calmer than a
+        // frame-by-frame raw readout.
+        constexpr int holdTicks = 15;       // ~0.75s at 20Hz
+        constexpr float decayPerTick = 0.35f; // dB per tick during release
+
+        auto updateHold = [] (float newVal, float& displayed, int& holdCounter)
+        {
+            if (newVal > displayed)
+            {
+                displayed = newVal;
+                holdCounter = holdTicks;
+            }
+            else if (holdCounter > 0)
+            {
+                --holdCounter;
+            }
+            else
+            {
+                displayed = std::max (newVal, displayed - decayPerTick);
+            }
+        };
+
+        updateHold (newGrL, grL, holdCounterL);
+        updateHold (newGrR, grR, holdCounterR);
+        peakL = newPeakL;
+        peakR = newPeakR;
+    }
+    else
+    {
+        // Frozen: keep latching the highest value seen since the click,
+        // don't decay. Clicking again resumes normal metering from here.
+        grL = std::max (grL, newGrL);
+        grR = std::max (grR, newGrR);
+        peakL = std::max (peakL, newPeakL);
+        peakR = std::max (peakR, newPeakR);
+    }
 
     float lufsI = processor.lufsIntegrated.load();
     float lufsS = processor.lufsShortTerm.load();
@@ -141,7 +186,24 @@ void SimpleLimiterAudioProcessorEditor::timerCallback()
                                                  : juce::String (lufsS, 1),
                                 juce::dontSendNotification);
 
+    // Unwrap the ring buffer into chronological order (oldest at index 0,
+    // most recent at the end) so it can be drawn straightforwardly left-to-right.
+    constexpr int N = SimpleLimiterAudioProcessor::historySize;
+    int writeIdx = processor.historyWriteIndex.load();
+    for (int i = 0; i < N; ++i)
+    {
+        int srcIdx = ((writeIdx + i) % N + N) % N;
+        peakHistoryLocal[(size_t) i] = processor.peakHistoryDb[(size_t) srcIdx].load();
+        grHistoryLocal[(size_t) i] = processor.grHistoryDb[(size_t) srcIdx].load();
+    }
+
     repaint();
+}
+
+void SimpleLimiterAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
+{
+    if (meterAreaBounds.contains (e.getPosition()))
+        metersFrozen = ! metersFrozen;
 }
 
 void SimpleLimiterAudioProcessorEditor::paint (juce::Graphics& g)
@@ -151,6 +213,63 @@ void SimpleLimiterAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (textColour);
     g.setFont (juce::Font (20.0f, juce::Font::bold));
     g.drawText ("SIMPLE LIMITER", getLocalBounds().removeFromTop (titleHeight), juce::Justification::centred);
+
+    // Scrolling history overlay: peak level history (dark fill, tallest =
+    // loudest), the ceiling as a red line, and gain reduction as a red cap
+    // drawn down from the ceiling at each point that got limited.
+    {
+        auto r = historyAreaBounds;
+        g.setColour (panelColour);
+        g.fillRoundedRectangle (r.toFloat(), 4.0f);
+
+        float ceilingDb = processor.apvts.getRawParameterValue ("ceiling")->load();
+        constexpr float topDb = 0.0f;
+        constexpr float bottomDb = -30.0f;
+        auto dbToY = [&] (float db)
+        {
+            float frac = juce::jlimit (0.0f, 1.0f, (db - bottomDb) / (topDb - bottomDb));
+            return r.getBottom() - frac * (float) r.getHeight();
+        };
+
+        constexpr int N = SimpleLimiterAudioProcessor::historySize;
+        float colWidth = (float) r.getWidth() / (float) N;
+
+        // Peak history as a filled path (dark, like an input waveform envelope).
+        juce::Path peakPath;
+        peakPath.startNewSubPath ((float) r.getX(), (float) r.getBottom());
+        for (int i = 0; i < N; ++i)
+        {
+            float x = (float) r.getX() + (float) i * colWidth;
+            float y = dbToY (peakHistoryLocal[(size_t) i]);
+            peakPath.lineTo (x, y);
+        }
+        peakPath.lineTo ((float) r.getRight(), (float) r.getBottom());
+        peakPath.closeSubPath();
+        g.setColour (juce::Colour (0xff3a3d45));
+        g.fillPath (peakPath);
+
+        // Gain reduction: a red cap drawn from the ceiling line down by the
+        // GR amount at each point, showing exactly where limiting engaged.
+        float ceilingY = dbToY (ceilingDb);
+        for (int i = 0; i < N; ++i)
+        {
+            float grDb = grHistoryLocal[(size_t) i];
+            if (grDb <= 0.05f) continue;
+            float x = (float) r.getX() + (float) i * colWidth;
+            float capBottomY = dbToY (ceilingDb - grDb);
+            g.setColour (meterColour.withAlpha (0.75f));
+            g.fillRect (x, ceilingY, colWidth + 1.0f, capBottomY - ceilingY);
+        }
+
+        // Ceiling line
+        g.setColour (meterColour);
+        g.drawLine ((float) r.getX(), ceilingY, (float) r.getRight(), ceilingY, 1.5f);
+
+        g.setColour (dimTextColour);
+        g.setFont (juce::Font (10.0f));
+        g.drawText (juce::String (ceilingDb, 1) + " dBTP", r.getX() + 4, (int) ceilingY - 14, 80, 14,
+                    juce::Justification::left);
+    }
 
     // Combination meter: red GR fill from the top, green tick showing current
     // output peak level (-24dBFS at bottom to 0dBFS at top).
@@ -192,9 +311,10 @@ void SimpleLimiterAudioProcessorEditor::paint (juce::Graphics& g)
     drawMeter (lMeter, grL, peakL, "L");
     drawMeter (rMeter, grR, peakR, "R");
 
-    g.setColour (dimTextColour);
+    g.setColour (metersFrozen ? accentColour : dimTextColour);
     g.setFont (juce::Font (11.0f));
-    g.drawText ("GR (red)  /  PEAK (green)", lMeter.getX() - 20, meterAreaBounds.getY() - 18,
+    g.drawText (metersFrozen ? "HOLD (click to resume)" : "GR (red)  /  PEAK (green) — click to hold",
+                lMeter.getX() - 20, meterAreaBounds.getY() - 18,
                 totalWidth + 40, 16, juce::Justification::centred);
 }
 
@@ -240,6 +360,9 @@ void SimpleLimiterAudioProcessorEditor::resized()
     oversamplingBox.setBounds (osArea);
     ditherButton.setBounds (ditherArea);
 
+    bounds.removeFromTop (sectionGap);
+
+    historyAreaBounds = bounds.removeFromTop (historyAreaH);
     bounds.removeFromTop (sectionGap);
 
     meterAreaBounds = bounds.removeFromTop (meterAreaH);
